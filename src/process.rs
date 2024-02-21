@@ -87,15 +87,20 @@ impl PSStatus {
             Some(stdout) => match Pin::new(stdout).poll_read(cx, &mut readbuf) {
                 Poll::Ready(Ok(())) => {
                     if readbuf.filled().len() != 0 {
+                        println!("--> stdout message");
                         Poll::Ready(Some(Ok(Output::Stdout(Bytes::from(
                             readbuf.filled().to_vec(),
                         )))))
                     } else {
+                        println!("--> stdout closing");
                         self.stdout = None;
                         self.next_stderr(cx, output_buffer_size, poll_input)
                     }
                 }
-                Poll::Ready(Err(todo)) => Poll::Ready(Some(Err(ProcessError {}))),
+                Poll::Ready(Err(todo)) => {
+                    println!("--> stdout error");
+                    Poll::Ready(Some(Err(ProcessError {})))
+                }
                 Poll::Pending => self.next_stderr(cx, output_buffer_size, poll_input),
             },
             None => self.next_stderr(cx, output_buffer_size, poll_input),
@@ -114,10 +119,12 @@ impl PSStatus {
             Some(stderr) => match Pin::new(stderr).poll_read(cx, &mut readbuf) {
                 Poll::Ready(Ok(())) => {
                     if readbuf.filled().len() != 0 {
+                        println!("--> stderr msg");
                         Poll::Ready(Some(Ok(Output::Stderr(Bytes::from(
                             readbuf.filled().to_vec(),
                         )))))
                     } else {
+                        println!("--> stderr closing");
                         self.stderr = None;
                         if self.stdout.is_none() {
                             self.stdin = None;
@@ -127,11 +134,15 @@ impl PSStatus {
                         }
                     }
                 }
-                Poll::Ready(Err(todo)) => Poll::Ready(Some(Err(ProcessError {}))),
+                Poll::Ready(Err(todo)) => {
+                    println!("--> stderr error");
+                    Poll::Ready(Some(Err(ProcessError {})))
+                }
                 Poll::Pending => self.next_stdin(cx, poll_input),
             },
             None => {
                 if self.stdout.is_none() {
+                    println!("--> stdout and stderr are closed");
                     self.stdin = None;
                     Poll::Ready(None)
                 } else {
@@ -154,19 +165,25 @@ impl PSStatus {
                         match poll_input(cx) {
                             Poll::Ready(Some(Ok(v))) => self.push_to_stdin(v, cx),
                             Poll::Ready(Some(Err(todo))) => {
+                                println!("--> input error");
                                 self.stdin = None;
                                 self.input_closed = true;
                                 // todo : logger quelque chose
                                 Poll::Pending
                             }
                             Poll::Ready(None) => {
+                                println!("--> input ending");
                                 self.stdin = None;
                                 self.input_closed = true;
                                 Poll::Pending
                             }
-                            Poll::Pending => Poll::Pending,
+                            Poll::Pending => {
+                                println!("--> input pending");
+                                Poll::Pending
+                            }
                         }
                     } else {
+                        println!("--> input closed");
                         Poll::Pending
                     }
                 }
@@ -187,9 +204,11 @@ impl PSStatus {
         match Pin::new(stdin).poll_write(cx, &mut v) {
             Poll::Ready(Ok(size)) => {
                 if size == 0 {
+                    println!("--> stdin ending");
                     self.stdin = None;
                     Poll::Pending
                 } else {
+                    println!("--> stdin accepting");
                     if size < v.len() {
                         self.input_buffer = Some(v.slice(size..));
                     }
@@ -201,6 +220,7 @@ impl PSStatus {
                 Poll::Ready(Some(Err(ProcessError {}))) //todo
             }
             Poll::Pending => {
+                println!("--> stdin pending");
                 self.input_buffer = Some(v);
                 Poll::Pending
             }
@@ -210,12 +230,18 @@ impl PSStatus {
     fn flush_stdin<O>(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<O, ProcessError>>> {
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_flush(cx) {
-            Poll::Ready(Ok(())) => Poll::Pending,
+            Poll::Ready(Ok(())) => {
+                println!("--> flush stdin OK");
+                Poll::Pending
+            }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
                 Poll::Ready(Some(Err(ProcessError {}))) //todo
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                println!("--> flush stdin pending");
+                Poll::Pending
+            }
         }
     }
 }
@@ -301,7 +327,12 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         //let input = stream::empty::<Result<Bytes, String>>();
-        let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
+        //let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
+        let input = stream::repeat_with(|| {
+            println!("coucou");
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        })
+        .take(2);
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
             .map(|r| r.unwrap().unwrap_out())
@@ -310,13 +341,13 @@ mod process_stream_test {
                 s + &String::from_utf8_lossy(&b)
             })
             .await;
-        assert_eq!(s, "value")
+        assert_eq!(s, "valuevalue")
     }
 
     #[tokio::test]
-    async fn read_input_slow_test() {
-        println!("read_input_test");
-        let child = Command::new("cat")
+    async fn dont_consume_input_test() {
+        let child = Command::new("sleep")
+            .arg("60")
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -324,7 +355,11 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         //let input = stream::empty::<Result<Bytes, String>>();
-        let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
+        //let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
+        let input = stream::repeat_with(|| {
+            println!("INPUT: coucou");
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        });
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
             .map(|r| r.unwrap().unwrap_out())
