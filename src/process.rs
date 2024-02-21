@@ -182,12 +182,16 @@ impl PSStatus {
                 }
             }
         }
-        if self.input_closed {
-            self.stdin = None;
+        if self.stdin.is_none() {
+            self.input_closed = true;
             self.input_buffer = None;
         }
-        if self.stdin.is_none() {
-            // il faut vider le buffer dans stdin
+        if self.input_closed {
+            if let Some(v) = self.input_buffer.take() {
+                // il faut vider le buffer dans stdin
+                self.push_to_stdin(v, cx);
+                todo();
+            }
         }
         Poll::Pending
     }
@@ -320,7 +324,7 @@ mod process_stream_test {
         //let input = stream::empty::<Result<Bytes, String>>();
         //let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
         let input = stream::repeat_with(|| {
-            println!("coucou");
+            println!("INPUT: coucou");
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         })
         .take(2);
