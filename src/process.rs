@@ -79,7 +79,7 @@ impl PSStatus {
         &mut self,
         cx: &mut Context<'_>,
         output_buffer_size: usize,
-        poll_input: impl FnOnce(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
+        poll_input: impl FnMut(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         let mut buf_vec = vec![0; output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
@@ -111,7 +111,7 @@ impl PSStatus {
         &mut self,
         cx: &mut Context<'_>,
         output_buffer_size: usize,
-        poll_input: impl FnOnce(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
+        poll_input: impl FnMut(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         let mut buf_vec = vec![0; output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
@@ -155,58 +155,50 @@ impl PSStatus {
     fn next_stdin<E>(
         &mut self,
         cx: &mut Context<'_>,
-        poll_input: impl FnOnce(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
+        mut poll_input: impl FnMut(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
-        match &mut self.stdin {
-            Some(_) => match self.input_buffer.take() {
-                Some(v) => self.push_to_stdin(v, cx),
-                None => {
-                    if !self.input_closed {
-                        match poll_input(cx) {
-                            Poll::Ready(Some(Ok(v))) => self.push_to_stdin(v, cx),
-                            Poll::Ready(Some(Err(todo))) => {
-                                println!("--> input error");
-                                self.stdin = None;
-                                self.input_closed = true;
-                                // todo : logger quelque chose
-                                Poll::Pending
-                            }
-                            Poll::Ready(None) => {
-                                println!("--> input ending");
-                                self.stdin = None;
-                                self.input_closed = true;
-                                Poll::Pending
-                            }
-                            Poll::Pending => {
-                                println!("--> input pending");
-                                Poll::Pending
-                            }
-                        }
-                    } else {
-                        println!("--> input closed");
-                        Poll::Pending
-                    }
+        if let (false, Some(v)) = (self.input_closed, self.input_buffer.take()) {
+            println!("--> Non empty buffer");
+            self.push_to_stdin(v, cx);
+        }
+        while let (Some(_), false, None) =
+            (&mut self.stdin, self.input_closed, self.input_buffer.take())
+        {
+            match poll_input(cx) {
+                Poll::Ready(Some(Ok(v))) => self.push_to_stdin(v, cx),
+                Poll::Ready(Some(Err(todo))) => {
+                    println!("--> input error");
+                    self.stdin = None;
+                    self.input_closed = true;
+                    // todo : logger quelque chose
                 }
-            },
-            None => {
-                self.input_closed = true;
-                Poll::Pending
+                Poll::Ready(None) => {
+                    println!("--> input ending");
+                    self.stdin = None;
+                    self.input_closed = true;
+                }
+                Poll::Pending => {
+                    println!("--> input pending");
+                }
             }
         }
+        if self.input_closed {
+            self.stdin = None;
+            self.input_buffer = None;
+        }
+        if self.stdin.is_none() {
+            // il faut vider le buffer dans stdin
+        }
+        Poll::Pending
     }
 
-    fn push_to_stdin<O>(
-        &mut self,
-        mut v: Bytes,
-        cx: &mut Context,
-    ) -> Poll<Option<Result<O, ProcessError>>> {
+    fn push_to_stdin(&mut self, mut v: Bytes, cx: &mut Context) {
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_write(cx, &mut v) {
             Poll::Ready(Ok(size)) => {
                 if size == 0 {
                     println!("--> stdin ending");
                     self.stdin = None;
-                    Poll::Pending
                 } else {
                     println!("--> stdin accepting");
                     if size < v.len() {
@@ -217,30 +209,27 @@ impl PSStatus {
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                Poll::Ready(Some(Err(ProcessError {}))) //todo
+                // todo : logger quelque chose
             }
             Poll::Pending => {
                 println!("--> stdin pending");
                 self.input_buffer = Some(v);
-                Poll::Pending
             }
         }
     }
 
-    fn flush_stdin<O>(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<O, ProcessError>>> {
+    fn flush_stdin(&mut self, cx: &mut Context<'_>) {
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
                 println!("--> flush stdin OK");
-                Poll::Pending
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                Poll::Ready(Some(Err(ProcessError {}))) //todo
+                // todo : logger quelque chose
             }
             Poll::Pending => {
                 println!("--> flush stdin pending");
-                Poll::Pending
             }
         }
     }
@@ -254,9 +243,11 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         println!("poll_next");
-        let proj = self.project();
+        let mut proj = self.project();
         let status = proj.status;
-        status.next_stdout(cx, *proj.output_buffer_size, |cx| proj.input.poll_next(cx))
+        status.next_stdout(cx, *proj.output_buffer_size, |cx| {
+            proj.input.as_mut().poll_next(cx)
+        })
     }
 }
 
