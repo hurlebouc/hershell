@@ -20,6 +20,7 @@ pub struct ProcessStream<I> {
     child: Child, // keep reference to child process in order not to drop it before dropping the ProcessStream
 }
 
+#[derive(Debug)]
 struct PSStatus {
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
@@ -161,11 +162,16 @@ impl PSStatus {
             println!("--> Non empty buffer");
             self.push_to_stdin(v, cx);
         }
-        while let (Some(_), false, None) =
-            (&mut self.stdin, self.input_closed, self.input_buffer.take())
-        {
+        while let (Some(_), false, true) = (
+            &mut self.stdin,
+            self.input_closed,
+            self.input_buffer.is_none(),
+        ) {
+            println!("--> polling input");
             match poll_input(cx) {
-                Poll::Ready(Some(Ok(v))) => self.push_to_stdin(v, cx),
+                Poll::Ready(Some(Ok(v))) => {
+                    self.push_to_stdin(v, cx);
+                }
                 Poll::Ready(Some(Err(todo))) => {
                     println!("--> input error");
                     self.stdin = None;
@@ -181,16 +187,20 @@ impl PSStatus {
                     println!("--> input pending");
                 }
             }
+            println!("--> debug psstatus after match: {:?}", self);
         }
+        println!("--> debug psstatus after while: {:?}", self);
         if self.stdin.is_none() {
+            println!("--> stdin is closed after polling input");
             self.input_closed = true;
             self.input_buffer = None;
         }
         if self.input_closed {
+            println!("--> input is closed");
             if let Some(v) = self.input_buffer.take() {
                 // il faut vider le buffer dans stdin
                 self.push_to_stdin(v, cx);
-                todo();
+                //todo();
             }
         }
         Poll::Pending
