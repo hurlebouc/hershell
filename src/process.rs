@@ -163,9 +163,11 @@ impl PSStatus {
             println!("--> Non empty buffer");
             self.push_to_stdin(v, cx);
         }
-        while let (Some(_), false, true) = (
+        let mut input_pending = false;
+        while let (Some(_), false, false, true) = (
             &mut self.stdin,
             self.input_closed,
+            input_pending,
             self.input_buffer.is_none(),
         ) {
             println!("--> polling input");
@@ -186,6 +188,7 @@ impl PSStatus {
                 }
                 Poll::Pending => {
                     println!("--> input pending");
+                    input_pending = true;
                 }
             }
         }
@@ -271,14 +274,14 @@ where
 
 #[cfg(test)]
 mod process_stream_test {
-    use std::{cell::Cell, process::Stdio, rc::Rc};
+    use std::{cell::Cell, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
     use futures::{
         stream::{self},
         StreamExt,
     };
-    use tokio::process::Command;
+    use tokio::{process::Command, time::sleep};
 
     use super::ProcessStream;
 
@@ -441,5 +444,34 @@ mod process_stream_test {
             .await;
         assert_eq!(s, "");
         assert_eq!(rc.get(), 27028);
+    }
+
+    #[tokio::test]
+    async fn produce_slowly_test() {
+        let child = Command::new("cat")
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+        //let input = stream::empty::<Result<Bytes, String>>();
+        let input = stream::once(async {
+            sleep(Duration::from_millis(1000)).await;
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        })
+        .chain(stream::once(async {
+            sleep(Duration::from_millis(1000)).await;
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        }));
+        let process_stream = ProcessStream::new(child, input, 1024);
+        let s = process_stream
+            .map(|r| r.unwrap().unwrap_out())
+            .fold("".to_string(), |s, b| async move {
+                println!("RES: {}", String::from_utf8_lossy(&b));
+                s + &String::from_utf8_lossy(&b)
+            })
+            .await;
+        assert_eq!(s, "valuevalue")
     }
 }
