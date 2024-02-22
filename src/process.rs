@@ -187,20 +187,23 @@ impl PSStatus {
                     println!("--> input pending");
                 }
             }
-            println!("--> debug psstatus after match: {:?}", self);
         }
-        println!("--> debug psstatus after while: {:?}", self);
         if self.stdin.is_none() {
             println!("--> stdin is closed after polling input");
             self.input_closed = true;
             self.input_buffer = None;
-        }
-        if self.input_closed {
+        } else if self.input_closed {
             println!("--> input is closed");
             if let Some(v) = self.input_buffer.take() {
                 // il faut vider le buffer dans stdin
                 self.push_to_stdin(v, cx);
-                //todo();
+                if self.input_buffer.is_none() {
+                    println!("--> close stdin after emptying buffer");
+                    self.stdin = None;
+                }
+            } else {
+                println!("--> directly close stdin because buffer is empty");
+                self.stdin = None;
             }
         }
         Poll::Pending
@@ -267,7 +270,7 @@ where
 
 #[cfg(test)]
 mod process_stream_test {
-    use std::process::Stdio;
+    use std::{cell::Cell, process::Stdio, rc::Rc};
 
     use bytes::Bytes;
     use futures::{
@@ -351,18 +354,20 @@ mod process_stream_test {
 
     #[tokio::test]
     async fn dont_consume_input_test() {
+        let rc = Rc::new(Cell::new(0));
         let child = Command::new("sleep")
-            .arg("60")
+            .arg("1")
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn");
-        //let input = stream::empty::<Result<Bytes, String>>();
-        //let input = stream::once(async { Ok::<Bytes, String>(Bytes::from("value".as_bytes())) });
+        let rc2 = rc.clone();
         let input = stream::repeat_with(|| {
-            println!("INPUT: coucou");
+            let v = rc2.get() + 1;
+            rc2.set(v);
+            println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
         let process_stream = ProcessStream::new(child, input, 1024);
@@ -373,6 +378,7 @@ mod process_stream_test {
                 s + &String::from_utf8_lossy(&b)
             })
             .await;
-        assert_eq!(s, "value")
+        assert_eq!(s, "");
+        assert_eq!(rc.get(), 13105);
     }
 }
