@@ -29,6 +29,7 @@ struct PSStatus {
     input_closed: bool,
 }
 
+#[derive(Debug)]
 pub enum Output {
     Stdout(Bytes),
     Stderr(Bytes),
@@ -380,5 +381,36 @@ mod process_stream_test {
             .await;
         assert_eq!(s, "");
         assert_eq!(rc.get(), 13105);
+    }
+
+    #[tokio::test]
+    async fn consume_input_slowly_test() {
+        let rc = Rc::new(Cell::new(0));
+        let child = Command::new("./read_slowly.sh")
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+        let rc2 = rc.clone();
+        let input = stream::repeat_with(|| {
+            let v = rc2.get() + 1;
+            rc2.set(v);
+            println!("INPUT: coucou {}", v);
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        });
+        let process_stream = ProcessStream::new(child, input, 1024);
+        let s = process_stream
+            .map(|r| {
+                println!("RES: {:?}", r);
+                r.unwrap().unwrap_out()
+            })
+            .fold("".to_string(), |s, b| async move {
+                s + &String::from_utf8_lossy(&b)
+            })
+            .await;
+        assert_eq!(s, "valueval");
+        //assert_eq!(rc.get(), 13105);
     }
 }
