@@ -413,4 +413,33 @@ mod process_stream_test {
         assert_eq!(s, "valueval");
         //assert_eq!(rc.get(), 13105);
     }
+
+    #[tokio::test]
+    async fn consume_later_test() {
+        let rc = Rc::new(Cell::new(0));
+        let child = Command::new("./consume_later.sh")
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+        let rc2 = rc.clone();
+        let input = stream::repeat_with(|| {
+            let v = rc2.get() + 1;
+            rc2.set(v);
+            println!("INPUT: coucou {}", v);
+            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+        });
+        let process_stream = ProcessStream::new(child, input, 1024);
+        let s = process_stream
+            .map(|r| r.unwrap().unwrap_out())
+            .fold("".to_string(), |s, b| async move {
+                println!("RES: {}", String::from_utf8_lossy(&b));
+                s + &String::from_utf8_lossy(&b)
+            })
+            .await;
+        assert_eq!(s, "");
+        assert_eq!(rc.get(), 27028);
+    }
 }
