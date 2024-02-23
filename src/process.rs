@@ -101,6 +101,7 @@ impl PSStatus {
                 }
                 Poll::Ready(Err(todo)) => {
                     println!("--> stdout error");
+                    self.stdout = None;
                     Poll::Ready(Some(Err(ProcessError {})))
                 }
                 Poll::Pending => self.next_stderr(cx, output_buffer_size, poll_input),
@@ -138,6 +139,7 @@ impl PSStatus {
                 }
                 Poll::Ready(Err(todo)) => {
                     println!("--> stderr error");
+                    self.stderr = None;
                     Poll::Ready(Some(Err(ProcessError {})))
                 }
                 Poll::Pending => self.next_stdin(cx, poll_input),
@@ -146,6 +148,7 @@ impl PSStatus {
                 if self.stdout.is_none() {
                     println!("--> stdout and stderr are closed");
                     self.stdin = None;
+                    self.input_closed = true;
                     Poll::Ready(None)
                 } else {
                     self.next_stdin(cx, poll_input)
@@ -173,13 +176,15 @@ impl PSStatus {
             println!("--> polling input");
             match poll_input(cx) {
                 Poll::Ready(Some(Ok(v))) => {
-                    self.push_to_stdin(v, cx);
+                    if let Some(err) = self.push_to_stdin(v, cx) {
+                        return Poll::Ready(Some(Err(err)));
+                    }
                 }
                 Poll::Ready(Some(Err(todo))) => {
                     println!("--> input error");
                     self.stdin = None;
                     self.input_closed = true;
-                    // todo : logger quelque chose
+                    return Poll::Ready(Some(Err(ProcessError{})));
                 }
                 Poll::Ready(None) => {
                     println!("--> input ending");
@@ -200,7 +205,9 @@ impl PSStatus {
             println!("--> input is closed");
             if let Some(v) = self.input_buffer.take() {
                 // il faut vider le buffer dans stdin
-                self.push_to_stdin(v, cx);
+                if let Some(err) = self.push_to_stdin(v, cx) {
+                    return Poll::Ready(Some(Err(err)));
+                }
                 if self.input_buffer.is_none() {
                     println!("--> close stdin after emptying buffer");
                     self.stdin = None;
@@ -213,7 +220,7 @@ impl PSStatus {
         Poll::Pending
     }
 
-    fn push_to_stdin(&mut self, mut v: Bytes, cx: &mut Context) {
+    fn push_to_stdin(&mut self, mut v: Bytes, cx: &mut Context) -> Option<ProcessError>{
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_write(cx, &mut v) {
             Poll::Ready(Ok(size)) => {
@@ -225,21 +232,24 @@ impl PSStatus {
                     if size < v.len() {
                         self.input_buffer = Some(v.slice(size..));
                     }
-                    self.flush_stdin(cx)
+                    if let Some(err) = self.flush_stdin(cx) {
+                        return Some(err);
+                    }
                 }
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                // todo : logger quelque chose
+                return Some(ProcessError{});
             }
             Poll::Pending => {
                 println!("--> stdin pending");
                 self.input_buffer = Some(v);
             }
         }
+        None
     }
 
-    fn flush_stdin(&mut self, cx: &mut Context<'_>) {
+    fn flush_stdin(&mut self, cx: &mut Context<'_>) -> Option<ProcessError>{
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
@@ -247,12 +257,13 @@ impl PSStatus {
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                // todo : logger quelque chose
+                return Some(ProcessError{});
             }
             Poll::Pending => {
                 println!("--> flush stdin pending");
             }
         }
+        None
     }
 }
 
