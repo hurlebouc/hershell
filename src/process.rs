@@ -1,10 +1,11 @@
 use std::{
-    pin::Pin,
+    pin::{pin, Pin},
+    process::ExitStatus,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{executor::block_on, Future, FutureExt, Stream};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -17,7 +18,6 @@ pub struct ProcessStream<I> {
     input: I,
     status: PSStatus,
     output_buffer_size: usize,
-    child: Child, // keep reference to child process in order not to drop it before dropping the ProcessStream
 }
 
 #[derive(Debug)]
@@ -27,26 +27,38 @@ struct PSStatus {
     stderr: Option<ChildStderr>,
     input_buffer: Option<Bytes>,
     input_closed: bool,
+    child: Option<Child>, // keep reference to child process in order not to drop it before dropping the ProcessStream
 }
 
 #[derive(Debug)]
 pub enum Output {
     Stdout(Bytes),
     Stderr(Bytes),
+    ExitCode(Child),
 }
 
 impl Output {
     pub fn unwrap_out(self) -> Bytes {
         match self {
             Output::Stdout(v) => v,
-            Output::Stderr(_) => panic!("Output is err"),
+            Output::Stderr(_) => panic!("Output is on stderr"),
+            Output::ExitCode(_) => panic!("Output is exit code"),
         }
     }
 
     pub fn unwrap_err(self) -> Bytes {
         match self {
             Output::Stderr(v) => v,
-            Output::Stdout(_) => panic!("Output is out"),
+            Output::Stdout(_) => panic!("Output is on stdout"),
+            Output::ExitCode(_) => panic!("Output is exit code"),
+        }
+    }
+
+    pub fn unwrap_exit_code(self) -> Child {
+        match self {
+            Output::Stdout(_) => panic!("Output is on stdout"),
+            Output::Stderr(_) => panic!("Output is on stderr"),
+            Output::ExitCode(c) => c,
         }
     }
 }
@@ -69,9 +81,9 @@ impl<I> ProcessStream<I> {
                 stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
                 input_buffer: None,
                 input_closed: false,
+                child: Some(child),
             },
             output_buffer_size,
-            child,
         }
     }
 }
@@ -131,7 +143,12 @@ impl PSStatus {
                         self.stderr = None;
                         if self.stdout.is_none() {
                             self.stdin = None;
-                            Poll::Ready(None)
+                            self.input_closed = true;
+                            if let Some(child) = self.child.take() {
+                                Poll::Ready(Some(Ok(Output::ExitCode(child))))
+                            } else {
+                                Poll::Ready(None)
+                            }
                         } else {
                             self.next_stdin(cx, poll_input)
                         }
@@ -149,7 +166,11 @@ impl PSStatus {
                     println!("--> stdout and stderr are closed");
                     self.stdin = None;
                     self.input_closed = true;
-                    Poll::Ready(None)
+                    if let Some(child) = self.child.take() {
+                        Poll::Ready(Some(Ok(Output::ExitCode(child))))
+                    } else {
+                        Poll::Ready(None)
+                    }
                 } else {
                     self.next_stdin(cx, poll_input)
                 }
@@ -184,7 +205,7 @@ impl PSStatus {
                     println!("--> input error");
                     self.stdin = None;
                     self.input_closed = true;
-                    return Poll::Ready(Some(Err(ProcessError{})));
+                    return Poll::Ready(Some(Err(ProcessError {})));
                 }
                 Poll::Ready(None) => {
                     println!("--> input ending");
@@ -220,7 +241,7 @@ impl PSStatus {
         Poll::Pending
     }
 
-    fn push_to_stdin(&mut self, mut v: Bytes, cx: &mut Context) -> Option<ProcessError>{
+    fn push_to_stdin(&mut self, mut v: Bytes, cx: &mut Context) -> Option<ProcessError> {
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_write(cx, &mut v) {
             Poll::Ready(Ok(size)) => {
@@ -239,7 +260,7 @@ impl PSStatus {
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                return Some(ProcessError{});
+                return Some(ProcessError {});
             }
             Poll::Pending => {
                 println!("--> stdin pending");
@@ -249,7 +270,7 @@ impl PSStatus {
         None
     }
 
-    fn flush_stdin(&mut self, cx: &mut Context<'_>) -> Option<ProcessError>{
+    fn flush_stdin(&mut self, cx: &mut Context<'_>) -> Option<ProcessError> {
         let stdin = self.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
@@ -257,7 +278,7 @@ impl PSStatus {
             }
             Poll::Ready(Err(todo)) => {
                 self.stdin = None;
-                return Some(ProcessError{});
+                return Some(ProcessError {});
             }
             Poll::Pending => {
                 println!("--> flush stdin pending");
@@ -309,7 +330,14 @@ mod process_stream_test {
         let input = stream::empty::<Result<Bytes, String>>();
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 s + &String::from_utf8_lossy(&b)
             })
@@ -330,7 +358,14 @@ mod process_stream_test {
         let input = stream::empty::<Result<Bytes, String>>();
         let process_stream = ProcessStream::new(child, input, 1);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 s + &String::from_utf8_lossy(&b)
             })
@@ -358,7 +393,14 @@ mod process_stream_test {
         .take(2);
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 println!("RES: {}", String::from_utf8_lossy(&b));
                 s + &String::from_utf8_lossy(&b)
@@ -387,7 +429,14 @@ mod process_stream_test {
         });
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 println!("RES: {}", String::from_utf8_lossy(&b));
                 s + &String::from_utf8_lossy(&b)
@@ -416,9 +465,13 @@ mod process_stream_test {
         });
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| {
+            .filter_map(|r| async {
                 println!("RES: {:?}", r);
-                r.unwrap().unwrap_out()
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
             })
             .fold("".to_string(), |s, b| async move {
                 s + &String::from_utf8_lossy(&b)
@@ -447,7 +500,14 @@ mod process_stream_test {
         });
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 println!("RES: {}", String::from_utf8_lossy(&b));
                 s + &String::from_utf8_lossy(&b)
@@ -477,7 +537,14 @@ mod process_stream_test {
         }));
         let process_stream = ProcessStream::new(child, input, 1024);
         let s = process_stream
-            .map(|r| r.unwrap().unwrap_out())
+            .filter_map(|r| async {
+                println!("RES: {:?}", r);
+                match r.unwrap() {
+                    crate::process::Output::Stdout(s) => Some(s),
+                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::ExitCode(_) => None,
+                }
+            })
             .fold("".to_string(), |s, b| async move {
                 println!("RES: {}", String::from_utf8_lossy(&b));
                 s + &String::from_utf8_lossy(&b)
