@@ -1,11 +1,14 @@
 use std::{
+    borrow::Borrow,
+    future::IntoFuture,
+    ops::Deref,
     pin::{pin, Pin},
     process::ExitStatus,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::{executor::block_on, Future, FutureExt, Stream};
+use futures::{executor::block_on, Future, FutureExt, Stream, StreamExt};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -18,6 +21,8 @@ pub struct ProcessStream<I> {
     input: I,
     status: PSStatus,
     output_buffer_size: usize,
+    //#[pin]
+    //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
 }
 
 #[derive(Debug)]
@@ -27,7 +32,7 @@ struct PSStatus {
     stderr: Option<ChildStderr>,
     input_buffer: Option<Bytes>,
     input_closed: bool,
-    child: Option<Child>, // keep reference to child process in order not to drop it before dropping the ProcessStream
+    child: Option<Child>,
 }
 
 #[derive(Debug)]
@@ -84,6 +89,7 @@ impl<I> ProcessStream<I> {
                 child: Some(child),
             },
             output_buffer_size,
+            //exit_code: Box::new(async move { child.wait().await }),
         }
     }
 }
@@ -302,6 +308,28 @@ where
             proj.input.as_mut().poll_next(cx)
         })
     }
+}
+
+fn test1<E, I: Stream<Item = Result<Bytes, E>>>(i: &mut I) {
+    //let test = Box::pin(i).as_mut();
+}
+
+fn test2(b: &mut Box<dyn Future<Output = u8>>, cx: &mut Context<'_>) {
+    //let mut test = *b;
+    //let mut test = Box::into_pin(test);
+    //let test = test.as_mut();
+    //test.poll(cx);
+}
+
+fn test3<E, I: Stream<Item = Result<Bytes, E>>>(
+    mut iopt: Pin<&mut Option<I>>,
+    cx: &mut Context<'_>,
+) {
+    let test = iopt.deref().as_ref();
+}
+
+fn test4<I>(opt: &Option<I>) {
+    let test = opt.as_ref();
 }
 
 #[cfg(test)]
