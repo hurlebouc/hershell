@@ -92,6 +92,24 @@ impl<I> ProcessStream<I> {
             //exit_code: Box::new(async move { child.wait().await }),
         }
     }
+
+    fn flush_stdin(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Option<ProcessError> {
+        let proj = self.project();
+        let stdin = proj.status.stdin.as_mut().unwrap();
+        match Pin::new(stdin).poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                println!("--> flush stdin OK");
+            }
+            Poll::Ready(Err(todo)) => {
+                proj.status.stdin = None;
+                return Some(ProcessError {});
+            }
+            Poll::Pending => {
+                println!("--> flush stdin pending");
+            }
+        }
+        None
+    }
 }
 
 impl PSStatus {
@@ -316,28 +334,6 @@ where
             None => todo!(),
         }
     }
-}
-
-fn test1<E, I: Stream<Item = Result<Bytes, E>>>(i: &mut I) {
-    //let test = Box::pin(i).as_mut();
-}
-
-fn test2(b: &mut Box<dyn Future<Output = u8>>, cx: &mut Context<'_>) {
-    //let mut test = *b;
-    //let mut test = Box::into_pin(test);
-    //let test = test.as_mut();
-    //test.poll(cx);
-}
-
-fn test3<E, I: Stream<Item = Result<Bytes, E>>>(
-    mut iopt: Pin<&mut Option<I>>,
-    cx: &mut Context<'_>,
-) {
-    let test = iopt.deref().as_ref();
-}
-
-fn test4<I>(opt: &Option<I>) {
-    let test = opt.as_ref();
 }
 
 #[cfg(test)]
