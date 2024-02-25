@@ -18,7 +18,7 @@ use tokio::{
 #[pin_project]
 pub struct ProcessStream<I> {
     #[pin]
-    input: I,
+    input: Option<I>,
     status: PSStatus,
     output_buffer_size: usize,
     //#[pin]
@@ -79,7 +79,7 @@ impl<I> ProcessStream<I> {
     /// Panics if stdin, stdout or stderr is not piped.
     pub fn new(mut child: Child, input: I, output_buffer_size: usize) -> ProcessStream<I> {
         ProcessStream {
-            input,
+            input: Some(input),
             status: PSStatus {
                 stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
                 stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
@@ -100,6 +100,7 @@ impl PSStatus {
         cx: &mut Context<'_>,
         output_buffer_size: usize,
         poll_input: impl FnMut(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
+        close_input: impl FnOnce(),
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         let mut buf_vec = vec![0; output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
@@ -304,9 +305,16 @@ where
         println!("poll_next");
         let mut proj = self.project();
         let status = proj.status;
-        status.next_stdout(cx, *proj.output_buffer_size, |cx| {
-            proj.input.as_mut().poll_next(cx)
-        })
+        match proj.input.as_pin_mut() {
+            Some(mut input) => status.next_stdout(
+                cx,
+                *proj.output_buffer_size,
+                |cx| input.as_mut().poll_next(cx),
+                //|| proj.input.as_mut().set(None),
+                || {},
+            ),
+            None => todo!(),
+        }
     }
 }
 
