@@ -189,14 +189,14 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
             self.as_mut().push_to_stdin(v, cx);
         }
         let mut input_pending = false;
-        while let (true, true, false, true) = (
+        while let (true, false, true, Some(input)) = (
             self.as_mut().project().status.stdin.is_some(),
-            self.as_mut().project().input.is_some(),
             input_pending,
             self.as_mut().project().status.input_buffer.is_none(),
+            self.as_mut().project().input.as_pin_mut(),
         ) {
             println!("--> polling input");
-            match self.as_mut().project().input.as_pin_mut().unwrap().poll_next(cx) {
+            match input.poll_next(cx) {
                 Poll::Ready(Some(Ok(v))) => {
                     if let Some(err) = self.as_mut().push_to_stdin(v, cx) {
                         return Poll::Ready(Some(Err(err)));
