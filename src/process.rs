@@ -19,20 +19,18 @@ use tokio::{
 pub struct ProcessStream<I> {
     #[pin]
     input: Option<I>,
-    status: PSStatus,
     output_buffer_size: usize,
-    //#[pin]
-    //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
-}
-
-#[derive(Debug)]
-struct PSStatus {
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     input_buffer: Option<Bytes>,
     child: Option<Child>,
+    //#[pin]
+    //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
 }
+
+#[derive(Debug)]
+struct PSStatus {}
 
 #[derive(Debug)]
 pub enum Output {
@@ -79,28 +77,25 @@ impl<I> ProcessStream<I> {
     pub fn new(mut child: Child, input: I, output_buffer_size: usize) -> ProcessStream<I> {
         ProcessStream {
             input: Some(input),
-            status: PSStatus {
-                stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
-                stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
-                stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
-                input_buffer: None,
-                child: Some(child),
-            },
+            stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
+            stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
+            stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
+            input_buffer: None,
+            child: Some(child),
             output_buffer_size,
             //exit_code: Box::new(async move { child.wait().await }),
         }
     }
 }
 
-impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
-
+impl<E, I: Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
     fn next_stdout(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         let mut buf_vec = vec![0; *self.as_mut().project().output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
-        match &mut self.as_mut().project().status.stdout {
+        match &mut self.as_mut().project().stdout {
             Some(stdout) => match Pin::new(stdout).poll_read(cx, &mut readbuf) {
                 Poll::Ready(Ok(())) => {
                     if readbuf.filled().len() != 0 {
@@ -110,13 +105,13 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                         )))))
                     } else {
                         println!("--> stdout closing");
-                        self.as_mut().project().status.stdout = None;
+                        *self.as_mut().project().stdout = None;
                         self.next_stderr(cx)
                     }
                 }
                 Poll::Ready(Err(todo)) => {
                     println!("--> stdout error");
-                    self.as_mut().project().status.stdout = None;
+                    *self.as_mut().project().stdout = None;
                     Poll::Ready(Some(Err(ProcessError {})))
                 }
                 Poll::Pending => self.next_stderr(cx),
@@ -124,14 +119,14 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
             None => self.next_stderr(cx),
         }
     }
-    
+
     fn next_stderr(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         let mut buf_vec = vec![0; *self.as_mut().project().output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
-        match &mut self.as_mut().project().status.stderr {
+        match &mut self.as_mut().project().stderr {
             Some(stderr) => match Pin::new(stderr).poll_read(cx, &mut readbuf) {
                 Poll::Ready(Ok(())) => {
                     if readbuf.filled().len() != 0 {
@@ -141,11 +136,11 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                         )))))
                     } else {
                         println!("--> stderr closing");
-                        self.as_mut().project().status.stderr = None;
-                        if self.as_mut().project().status.stdout.is_none() {
-                            self.as_mut().project().status.stdin = None;
+                        *self.as_mut().project().stderr = None;
+                        if self.as_mut().project().stdout.is_none() {
+                            *self.as_mut().project().stdin = None;
                             self.as_mut().project().input.set(None);
-                            if let Some(child) = self.as_mut().project().status.child.take() {
+                            if let Some(child) = self.as_mut().project().child.take() {
                                 Poll::Ready(Some(Ok(Output::ExitCode(child))))
                             } else {
                                 Poll::Ready(None)
@@ -157,17 +152,17 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                 }
                 Poll::Ready(Err(todo)) => {
                     println!("--> stderr error");
-                    self.as_mut().project().status.stderr = None;
+                    *self.as_mut().project().stderr = None;
                     Poll::Ready(Some(Err(ProcessError {})))
                 }
                 Poll::Pending => self.next_stdin(cx),
             },
             None => {
-                if self.as_mut().project().status.stdout.is_none() {
+                if self.as_mut().project().stdout.is_none() {
                     println!("--> stdout and stderr are closed");
-                    self.as_mut().project().status.stdin = None;
+                    *self.as_mut().project().stdin = None;
                     self.as_mut().project().input.set(None);
-                    if let Some(child) = self.as_mut().project().status.child.take() {
+                    if let Some(child) = self.as_mut().project().child.take() {
                         Poll::Ready(Some(Ok(Output::ExitCode(child))))
                     } else {
                         Poll::Ready(None)
@@ -184,15 +179,15 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         //let status = self.as_mut().project().status;
-        if let  Some(v) = self.as_mut().project().status.input_buffer.take() {
+        if let Some(v) = self.as_mut().project().input_buffer.take() {
             println!("--> Non empty buffer");
             self.as_mut().push_to_stdin(v, cx);
         }
         let mut input_pending = false;
         while let (true, false, true, Some(input)) = (
-            self.as_mut().project().status.stdin.is_some(),
+            self.as_mut().project().stdin.is_some(),
             input_pending,
-            self.as_mut().project().status.input_buffer.is_none(),
+            self.as_mut().project().input_buffer.is_none(),
             self.as_mut().project().input.as_pin_mut(),
         ) {
             println!("--> polling input");
@@ -204,13 +199,13 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                 }
                 Poll::Ready(Some(Err(todo))) => {
                     println!("--> input error");
-                    self.as_mut().project().status.stdin = None;
+                    *self.as_mut().project().stdin = None;
                     self.as_mut().project().input.set(None);
                     return Poll::Ready(Some(Err(ProcessError {})));
                 }
                 Poll::Ready(None) => {
                     println!("--> input ending");
-                    self.as_mut().project().status.stdin = None;
+                    *self.as_mut().project().stdin = None;
                     self.as_mut().project().input.set(None);
                 }
                 Poll::Pending => {
@@ -219,24 +214,24 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                 }
             }
         }
-        if self.as_mut().project().status.stdin.is_none() {
+        if self.as_mut().project().stdin.is_none() {
             println!("--> stdin is closed after polling input");
             self.as_mut().project().input.set(None);
-            self.as_mut().project().status.input_buffer = None;
+            *self.as_mut().project().input_buffer = None;
         } else if self.as_mut().project().input.is_none() {
             println!("--> input is closed");
-            if let Some(v) = self.as_mut().project().status.input_buffer.take() {
+            if let Some(v) = self.as_mut().project().input_buffer.take() {
                 // il faut vider le buffer dans stdin
                 if let Some(err) = self.as_mut().push_to_stdin(v, cx) {
                     return Poll::Ready(Some(Err(err)));
                 }
-                if self.as_mut().project().status.input_buffer.is_none() {
+                if self.as_mut().project().input_buffer.is_none() {
                     println!("--> close stdin after emptying buffer");
-                    self.as_mut().project().status.stdin = None;
+                    *self.as_mut().project().stdin = None;
                 }
             } else {
                 println!("--> directly close stdin because buffer is empty");
-                self.as_mut().project().status.stdin = None;
+                *self.as_mut().project().stdin = None;
             }
         }
         Poll::Pending
@@ -248,16 +243,16 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
         cx: &mut Context,
     ) -> Option<ProcessError> {
         let proj = self.as_mut().project();
-        let stdin = proj.status.stdin.as_mut().unwrap();
+        let stdin = proj.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_write(cx, &mut v) {
             Poll::Ready(Ok(size)) => {
                 if size == 0 {
                     println!("--> stdin ending");
-                    proj.status.stdin = None;
+                    *proj.stdin = None;
                 } else {
                     println!("--> stdin accepting");
                     if size < v.len() {
-                        proj.status.input_buffer = Some(v.slice(size..));
+                        *proj.input_buffer = Some(v.slice(size..));
                     }
                     if let Some(err) = self.flush_stdin(cx) {
                         return Some(err);
@@ -265,12 +260,12 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                 }
             }
             Poll::Ready(Err(todo)) => {
-                proj.status.stdin = None;
+                *proj.stdin = None;
                 return Some(ProcessError {});
             }
             Poll::Pending => {
                 println!("--> stdin pending");
-                proj.status.input_buffer = Some(v);
+                *proj.input_buffer = Some(v);
             }
         }
         None
@@ -278,13 +273,13 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
 
     fn flush_stdin(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Option<ProcessError> {
         let proj = self.project();
-        let stdin = proj.status.stdin.as_mut().unwrap();
+        let stdin = proj.stdin.as_mut().unwrap();
         match Pin::new(stdin).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
                 println!("--> flush stdin OK");
             }
             Poll::Ready(Err(todo)) => {
-                proj.status.stdin = None;
+                *proj.stdin = None;
                 return Some(ProcessError {});
             }
             Poll::Pending => {
