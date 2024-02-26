@@ -99,9 +99,8 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
     fn next_stdout(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        output_buffer_size: usize,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
-        let mut buf_vec = vec![0; output_buffer_size];
+        let mut buf_vec = vec![0; *self.as_mut().project().output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
         match &mut self.as_mut().project().status.stdout {
             Some(stdout) => match Pin::new(stdout).poll_read(cx, &mut readbuf) {
@@ -114,7 +113,7 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                     } else {
                         println!("--> stdout closing");
                         self.as_mut().project().status.stdout = None;
-                        self.next_stderr(cx, output_buffer_size)
+                        self.next_stderr(cx)
                     }
                 }
                 Poll::Ready(Err(todo)) => {
@@ -122,18 +121,17 @@ impl<E, I : Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
                     self.as_mut().project().status.stdout = None;
                     Poll::Ready(Some(Err(ProcessError {})))
                 }
-                Poll::Pending => self.next_stderr(cx, output_buffer_size),
+                Poll::Pending => self.next_stderr(cx),
             },
-            None => self.next_stderr(cx, output_buffer_size),
+            None => self.next_stderr(cx),
         }
     }
     
     fn next_stderr(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        output_buffer_size: usize,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
-        let mut buf_vec = vec![0; output_buffer_size];
+        let mut buf_vec = vec![0; *self.as_mut().project().output_buffer_size];
         let mut readbuf = ReadBuf::new(&mut buf_vec);
         match &mut self.as_mut().project().status.stderr {
             Some(stderr) => match Pin::new(stderr).poll_read(cx, &mut readbuf) {
@@ -508,18 +506,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         println!("poll_next");
-        let mut proj = self.project();
-        let status = proj.status;
-        match proj.input.as_pin_mut() {
-            Some(mut input) => status.next_stdout(
-                cx,
-                *proj.output_buffer_size,
-                |cx| input.as_mut().poll_next(cx),
-                //|| proj.input.as_mut().set(None),
-                || {},
-            ),
-            None => todo!(),
-        }
+        self.next_stdout(cx)
     }
 }
 
