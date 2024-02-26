@@ -107,8 +107,8 @@ impl<I> ProcessStream<I> {
             self.as_mut().push_to_stdin(v, cx);
         }
         let mut input_pending = false;
-        while let (Some(_), false, false, true) = (
-            &self.as_mut().project().status.stdin,
+        while let (true, false, false, true) = (
+            self.as_mut().project().status.stdin.is_some(),
             self.as_mut().project().status.input_closed,
             input_pending,
             self.as_mut().project().status.input_buffer.is_none(),
