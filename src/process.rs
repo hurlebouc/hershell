@@ -92,6 +92,62 @@ impl<I> ProcessStream<I> {
             //exit_code: Box::new(async move { child.wait().await }),
         }
     }
+    
+    fn next_stderr<E>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output_buffer_size: usize,
+        poll_input: impl FnMut(&mut Context<'_>) -> Poll<Option<Result<Bytes, E>>>,
+    ) -> Poll<Option<Result<Output, ProcessError>>> {
+        let mut buf_vec = vec![0; output_buffer_size];
+        let mut readbuf = ReadBuf::new(&mut buf_vec);
+        match &mut self.as_mut().project().status.stderr {
+            Some(stderr) => match Pin::new(stderr).poll_read(cx, &mut readbuf) {
+                Poll::Ready(Ok(())) => {
+                    if readbuf.filled().len() != 0 {
+                        println!("--> stderr msg");
+                        Poll::Ready(Some(Ok(Output::Stderr(Bytes::from(
+                            readbuf.filled().to_vec(),
+                        )))))
+                    } else {
+                        println!("--> stderr closing");
+                        self.as_mut().project().status.stderr = None;
+                        if self.as_mut().project().status.stdout.is_none() {
+                            self.as_mut().project().status.stdin = None;
+                            self.as_mut().project().status.input_closed = true;
+                            if let Some(child) = self.as_mut().project().status.child.take() {
+                                Poll::Ready(Some(Ok(Output::ExitCode(child))))
+                            } else {
+                                Poll::Ready(None)
+                            }
+                        } else {
+                            self.next_stdin(cx, poll_input)
+                        }
+                    }
+                }
+                Poll::Ready(Err(todo)) => {
+                    println!("--> stderr error");
+                    self.as_mut().project().status.stderr = None;
+                    Poll::Ready(Some(Err(ProcessError {})))
+                }
+                Poll::Pending => self.next_stdin(cx, poll_input),
+            },
+            None => {
+                if self.as_mut().project().status.stdout.is_none() {
+                    println!("--> stdout and stderr are closed");
+                    self.as_mut().project().status.stdin = None;
+                    self.as_mut().project().status.input_closed = true;
+                    if let Some(child) = self.as_mut().project().status.child.take() {
+                        Poll::Ready(Some(Ok(Output::ExitCode(child))))
+                    } else {
+                        Poll::Ready(None)
+                    }
+                } else {
+                    self.next_stdin(cx, poll_input)
+                }
+            }
+        }
+    }
 
     fn next_stdin<E>(
         mut self: Pin<&mut Self>,
