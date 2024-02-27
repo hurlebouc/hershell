@@ -24,11 +24,10 @@ pub struct ProcessStream<I, X> {
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     input_buffer: Option<Bytes>,
-    child: Option<Child>,
     //#[pin]
     //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
     #[pin]
-    exit_code: X,
+    exit_code: Option<X>,
 }
 
 #[derive(Debug)]
@@ -38,7 +37,7 @@ struct PSStatus {}
 pub enum Output {
     Stdout(Bytes),
     Stderr(Bytes),
-    ExitCode(Child),
+    ExitCode(ExitStatus),
 }
 
 impl Output {
@@ -58,7 +57,7 @@ impl Output {
         }
     }
 
-    pub fn unwrap_exit_code(self) -> Child {
+    pub fn unwrap_exit_code(self) -> ExitStatus {
         match self {
             Output::Stdout(_) => panic!("Output is on stdout"),
             Output::Stderr(_) => panic!("Output is on stderr"),
@@ -81,35 +80,9 @@ fn newProcess<I>(
         stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
         stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
         input_buffer: None,
-        child: None,
         output_buffer_size,
         //exit_code: Box::new(async move { child.wait().await }),
-        exit_code: async move { child.wait().await },
-    }
-}
-
-impl<I, X> ProcessStream<I, X> {
-    /// Creates a new [`ProcessStream<I>`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if stdin, stdout or stderr is not piped.
-    pub fn new(
-        mut child: Child,
-        input: I,
-        output_buffer_size: usize,
-    ) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>> {
-        ProcessStream {
-            input: Some(input),
-            stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
-            stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
-            stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
-            input_buffer: None,
-            child: None,
-            output_buffer_size,
-            //exit_code: Box::new(async move { child.wait().await }),
-            exit_code: async move { child.wait().await },
-        }
+        exit_code: Some(async move { child.wait().await }),
     }
 }
 
@@ -170,11 +143,7 @@ impl<
                         if self.as_mut().project().stdout.is_none() {
                             *self.as_mut().project().stdin = None;
                             self.as_mut().project().input.set(None);
-                            if let Some(child) = self.as_mut().project().child.take() {
-                                Poll::Ready(Some(Ok(Output::ExitCode(child))))
-                            } else {
-                                Poll::Ready(None)
-                            }
+                            self.next_exit_code(cx)
                         } else {
                             self.next_stdin(cx)
                         }
@@ -192,11 +161,7 @@ impl<
                     println!("--> stdout and stderr are closed");
                     *self.as_mut().project().stdin = None;
                     self.as_mut().project().input.set(None);
-                    if let Some(child) = self.as_mut().project().child.take() {
-                        Poll::Ready(Some(Ok(Output::ExitCode(child))))
-                    } else {
-                        Poll::Ready(None)
-                    }
+                    self.next_exit_code(cx)
                 } else {
                     self.next_stdin(cx)
                 }
@@ -265,6 +230,27 @@ impl<
             }
         }
         Poll::Pending
+    }
+
+    fn next_exit_code(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Output, ProcessError>>> {
+        if let Some(exit_code) = self.as_mut().project().exit_code.as_pin_mut().take() {
+            match exit_code.poll(cx) {
+                Poll::Ready(Ok(x)) => {
+                    self.as_mut().project().exit_code.set(None);
+                    Poll::Ready(Some(Ok(Output::ExitCode(x))))
+                }
+                Poll::Ready(Err(todo)) => {
+                    self.as_mut().project().exit_code.set(None);
+                    Poll::Ready(Some(Err(ProcessError {})))
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            Poll::Ready(None)
+        }
     }
 
     fn push_to_stdin(
