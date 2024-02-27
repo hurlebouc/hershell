@@ -16,7 +16,7 @@ use tokio::{
 };
 
 #[pin_project]
-pub struct ProcessStream<I> {
+pub struct ProcessStream<I, X> {
     #[pin]
     input: Option<I>,
     output_buffer_size: usize,
@@ -27,6 +27,8 @@ pub struct ProcessStream<I> {
     child: Option<Child>,
     //#[pin]
     //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
+    #[pin]
+    exit_code: X,
 }
 
 #[derive(Debug)]
@@ -68,27 +70,55 @@ impl Output {
 #[derive(Debug)]
 pub struct ProcessError {}
 
-impl<I> ProcessStream<I> {
+fn newProcess<I>(
+    mut child: Child,
+    input: I,
+    output_buffer_size: usize,
+) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>> {
+    ProcessStream {
+        input: Some(input),
+        stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
+        stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
+        stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
+        input_buffer: None,
+        child: None,
+        output_buffer_size,
+        //exit_code: Box::new(async move { child.wait().await }),
+        exit_code: async move { child.wait().await },
+    }
+}
+
+impl<I, X> ProcessStream<I, X> {
     /// Creates a new [`ProcessStream<I>`].
     ///
     /// # Panics
     ///
     /// Panics if stdin, stdout or stderr is not piped.
-    pub fn new(mut child: Child, input: I, output_buffer_size: usize) -> ProcessStream<I> {
+    pub fn new(
+        mut child: Child,
+        input: I,
+        output_buffer_size: usize,
+    ) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>> {
         ProcessStream {
             input: Some(input),
             stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
             stdout: Some(child.stdout.take().expect("Child stdout must be piped")),
             stderr: Some(child.stderr.take().expect("Child stderr must be piped")),
             input_buffer: None,
-            child: Some(child),
+            child: None,
             output_buffer_size,
             //exit_code: Box::new(async move { child.wait().await }),
+            exit_code: async move { child.wait().await },
         }
     }
 }
 
-impl<E, I: Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
+impl<
+        E,
+        I: Stream<Item = Result<Bytes, E>>,
+        X: Future<Output = Result<ExitStatus, std::io::Error>>,
+    > ProcessStream<I, X>
+{
     fn next_stdout(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -290,9 +320,10 @@ impl<E, I: Stream<Item = Result<Bytes, E>>> ProcessStream<I> {
     }
 }
 
-impl<I, E> Stream for ProcessStream<I>
+impl<I, X, E> Stream for ProcessStream<I, X>
 where
     I: Stream<Item = Result<Bytes, E>>,
+    X: Future<Output = Result<ExitStatus, std::io::Error>>,
 {
     type Item = Result<Output, ProcessError>;
 
@@ -304,6 +335,7 @@ where
 
 #[cfg(test)]
 mod process_stream_test {
+    use crate::process::newProcess;
     use std::{cell::Cell, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
@@ -326,7 +358,7 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         let input = stream::empty::<Result<Bytes, String>>();
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -354,7 +386,7 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         let input = stream::empty::<Result<Bytes, String>>();
-        let process_stream = ProcessStream::new(child, input, 1);
+        let process_stream = newProcess(child, input, 1);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -389,7 +421,7 @@ mod process_stream_test {
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         })
         .take(2);
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -425,7 +457,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -461,7 +493,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -496,7 +528,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -533,7 +565,7 @@ mod process_stream_test {
             sleep(Duration::from_millis(1000)).await;
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         }));
-        let process_stream = ProcessStream::new(child, input, 1024);
+        let process_stream = newProcess(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
