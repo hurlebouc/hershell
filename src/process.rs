@@ -1,14 +1,11 @@
 use std::{
-    borrow::Borrow,
-    future::IntoFuture,
-    ops::Deref,
-    pin::{pin, Pin},
+    pin::Pin,
     process::ExitStatus,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::{executor::block_on, Future, FutureExt, Stream, StreamExt};
+use futures::{Future, Stream};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -69,7 +66,7 @@ impl Output {
 #[derive(Debug)]
 pub struct ProcessError {}
 
-fn newProcess<I>(
+pub fn new_process<I>(
     mut child: Child,
     input: I,
     output_buffer_size: usize,
@@ -321,7 +318,7 @@ where
 
 #[cfg(test)]
 mod process_stream_test {
-    use crate::process::newProcess;
+    use crate::process::new_process;
     use std::{cell::Cell, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
@@ -344,7 +341,7 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         let input = stream::empty::<Result<Bytes, String>>();
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -372,7 +369,7 @@ mod process_stream_test {
             .spawn()
             .expect("failed to spawn");
         let input = stream::empty::<Result<Bytes, String>>();
-        let process_stream = newProcess(child, input, 1);
+        let process_stream = new_process(child, input, 1);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -407,7 +404,7 @@ mod process_stream_test {
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         })
         .take(2);
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -443,7 +440,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -479,7 +476,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -514,7 +511,7 @@ mod process_stream_test {
             println!("INPUT: coucou {}", v);
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         });
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
@@ -551,7 +548,7 @@ mod process_stream_test {
             sleep(Duration::from_millis(1000)).await;
             Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
         }));
-        let process_stream = newProcess(child, input, 1024);
+        let process_stream = new_process(child, input, 1024);
         let s = process_stream
             .filter_map(|r| async {
                 println!("RES: {:?}", r);
