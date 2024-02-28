@@ -328,8 +328,6 @@ mod process_stream_test {
     };
     use tokio::{process::Command, time::sleep};
 
-    use super::ProcessStream;
-
     #[tokio::test]
     async fn simple_process_test() {
         let child = Command::new("echo")
