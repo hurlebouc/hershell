@@ -1,11 +1,12 @@
 use std::{
+    future::ready,
     pin::Pin,
     process::ExitStatus,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::{Future, Stream};
+use futures::{Future, Stream, TryStream, TryStreamExt};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -321,6 +322,35 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         println!("poll_next");
         self.next_stdout(cx)
+    }
+}
+
+//impl<T: TryStream> ProcStreamExt for T {}
+
+pub trait ProcStreamExt
+where
+    Self: TryStream<Ok = Output>,
+{
+    fn stdout(self) -> impl TryStream<Ok = Bytes, Error = <Self as TryStream>::Error>
+    where
+        Self: Sized,
+    {
+        self.try_filter_map(|o| match o {
+            Output::Stdout(b) => ready(Ok(Some(b))),
+            Output::Stderr(_) => ready(Ok(None)),
+            Output::ExitCode(_) => ready(Ok(None)),
+        })
+    }
+
+    fn stderr(self) -> impl TryStream<Ok = Bytes, Error = <Self as TryStream>::Error>
+    where
+        Self: Sized,
+    {
+        self.try_filter_map(|o| match o {
+            Output::Stdout(_) => ready(Ok(None)),
+            Output::Stderr(b) => ready(Ok(Some(b))),
+            Output::ExitCode(_) => ready(Ok(None)),
+        })
     }
 }
 
