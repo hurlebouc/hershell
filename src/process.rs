@@ -325,7 +325,7 @@ where
     }
 }
 
-//impl<T: TryStream> ProcStreamExt for T {}
+impl<T: TryStream<Ok = Output>> ProcStreamExt for T {}
 
 pub trait ProcStreamExt
 where
