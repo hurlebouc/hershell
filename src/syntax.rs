@@ -23,24 +23,30 @@ impl<T: AsRef<OsStr> + CmdDesc> From<T> for Cmd {
     }
 }
 
-impl<A: AsRef<OsStr>, T: AsRef<OsStr>> From<(T, &[A])> for Cmd {
-    fn from((prog, args): (T, &[A])) -> Self {
+impl<A, AS, T> From<(T, AS)> for Cmd
+where
+    A: AsRef<OsStr>,
+    AS: IntoIterator<Item = A>,
+    T: AsRef<OsStr>,
+{
+    fn from((prog, args): (T, AS)) -> Self {
         let mut command = Command::new(prog);
         command.args(args);
         Cmd(command)
     }
 }
 
-impl<A, T, K, E, V, P> From<(E, P, T, &[A])> for Cmd
+impl<A, AS, T, K, E, V, P> From<(E, P, T, AS)> for Cmd
 where
     A: AsRef<OsStr>,
+    AS: IntoIterator<Item = A>,
     T: AsRef<OsStr>,
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,
     P: AsRef<Path>,
     E: IntoIterator<Item = (K, V)>,
 {
-    fn from((env, cwd, prog, args): (E, P, T, &[A])) -> Self {
+    fn from((env, cwd, prog, args): (E, P, T, AS)) -> Self {
         let mut command = Command::new(prog);
         command.args(args).current_dir(cwd).envs(env);
         Cmd(command)
