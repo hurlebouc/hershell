@@ -26,6 +26,10 @@ impl Cmd {
         self.0.current_dir(dir);
         self
     }
+
+    pub async fn run(self) -> std::io::Result<ExitStatus> {
+        run(self).await
+    }
 }
 
 /// Ce trait est utilisé pour ne pas dupliquer l'implémentation `impl<T: AsRef<OsStr>> From<T> for Cmd`, tout en limitant
