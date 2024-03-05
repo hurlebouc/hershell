@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures::TryStream;
-use std::{ffi::OsStr, future::Future, process::ExitStatus};
+use std::{ffi::OsStr, future::Future, path::Path, process::ExitStatus};
 use tokio::process::Command;
 
 use crate::process::{new_process, ProcessStream};
@@ -8,9 +8,41 @@ use tokio::io::AsyncWriteExt;
 
 pub struct Cmd(Command);
 
-impl<T: AsRef<OsStr>> From<T> for Cmd {
-    fn from(value: T) -> Self {
-        let command = Command::new(value);
+/// Ce trait est utilisé pour ne pas dupliquer l'implémentation `impl<T: AsRef<OsStr>> From<T> for Cmd`, tout en limitant
+/// la porté de cette implémentation aux types spécifiquement marqués par `CmdDesc`. Ce contournent permet de définir d'autre implémentations
+/// qui ne sont pas couvertes par `AsRef`
+trait CmdDesc {}
+impl CmdDesc for String {}
+impl CmdDesc for &str {}
+impl CmdDesc for &OsStr {}
+
+impl<T: AsRef<OsStr> + CmdDesc> From<T> for Cmd {
+    fn from(prog: T) -> Self {
+        let command = Command::new(prog);
+        Cmd(command)
+    }
+}
+
+impl<A: AsRef<OsStr>, T: AsRef<OsStr>> From<(T, &[A])> for Cmd {
+    fn from((prog, args): (T, &[A])) -> Self {
+        let mut command = Command::new(prog);
+        command.args(args);
+        Cmd(command)
+    }
+}
+
+impl<A, T, K, E, V, P> From<(E, P, T, &[A])> for Cmd
+where
+    A: AsRef<OsStr>,
+    T: AsRef<OsStr>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+    P: AsRef<Path>,
+    E: IntoIterator<Item = (K, V)>,
+{
+    fn from((env, cwd, prog, args): (E, P, T, &[A])) -> Self {
+        let mut command = Command::new(prog);
+        command.args(args).current_dir(cwd).envs(env);
         Cmd(command)
     }
 }
