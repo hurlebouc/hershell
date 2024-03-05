@@ -8,6 +8,26 @@ use tokio::io::AsyncWriteExt;
 
 pub struct Cmd(Command);
 
+impl Cmd {
+    pub fn with_envs<K, V, E>(mut self, vars: E) -> Self
+    where
+        E: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.0.envs(vars);
+        self
+    }
+
+    pub fn with_cwd<P>(mut self, dir: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
+        self.0.current_dir(dir);
+        self
+    }
+}
+
 /// Ce trait est utilisé pour ne pas dupliquer l'implémentation `impl<T: AsRef<OsStr>> From<T> for Cmd`, tout en limitant
 /// la porté de cette implémentation aux types spécifiquement marqués par `CmdDesc`. Ce contournent permet de définir d'autre implémentations
 /// qui ne sont pas couvertes par `AsRef`
@@ -20,6 +40,12 @@ impl<T: AsRef<OsStr> + CmdDesc> From<T> for Cmd {
     fn from(prog: T) -> Self {
         let command = Command::new(prog);
         Cmd(command)
+    }
+}
+
+impl From<Command> for Cmd {
+    fn from(value: Command) -> Self {
+        Cmd(value)
     }
 }
 
