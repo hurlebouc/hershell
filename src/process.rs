@@ -259,14 +259,10 @@ impl<
         }
     }
 
-    fn push_to_stdin(
-        mut self: Pin<&mut Self>,
-        mut v: Bytes,
-        cx: &mut Context,
-    ) -> Option<ProcessError> {
+    fn push_to_stdin(mut self: Pin<&mut Self>, v: Bytes, cx: &mut Context) -> Option<ProcessError> {
         let proj = self.as_mut().project();
         let stdin = proj.stdin.as_mut().unwrap();
-        match Pin::new(stdin).poll_write(cx, &mut v) {
+        match Pin::new(stdin).poll_write(cx, &v) {
             Poll::Ready(Ok(size)) => {
                 if size == 0 {
                     println!("--> stdin ending");
