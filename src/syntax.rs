@@ -113,10 +113,14 @@ pub async fn apply<C: Into<Cmd>, U: AsRef<[u8]> + std::marker::Send + 'static>(
     child.wait_with_output().await
 }
 
-pub fn stream<I: TryStream<Ok = Bytes>, C: Into<Cmd>>(
+pub fn stream<I, U, C: Into<Cmd>>(
     cmd: C,
     stdin: I,
-) -> std::io::Result<ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>>> {
+) -> std::io::Result<ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U>>
+where
+    U: AsRef<[u8]>,
+    I: TryStream<Ok = Bytes>,
+{
     let mut command = cmd.into().0;
     let child = command
         .kill_on_drop(true)

@@ -14,14 +14,14 @@ use tokio::{
 };
 
 #[pin_project]
-pub struct ProcessStream<I, X> {
+pub struct ProcessStream<I, X, U> {
     #[pin]
     input: Option<I>,
     output_buffer_size: usize,
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
-    input_buffer: Option<Bytes>,
+    input_buffer: Option<(U, usize)>,
     //#[pin]
     //exit_code: Box<dyn Future<Output = Result<ExitStatus, std::io::Error>>>,
     #[pin]
@@ -67,11 +67,11 @@ impl Output {
 #[derive(Debug)]
 pub struct ProcessError {}
 
-pub fn new_process<I>(
+pub fn new_process<I, U>(
     mut child: Child,
     input: I,
     output_buffer_size: usize,
-) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>> {
+) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U> {
     ProcessStream {
         input: Some(input),
         stdin: Some(child.stdin.take().expect("Child stdin must be piped")),
@@ -84,19 +84,20 @@ pub fn new_process<I>(
     }
 }
 
-pub fn new_process_typed<E, I: Stream<Item = Result<Bytes, E>>>(
+pub fn new_process_typed<E, I: Stream<Item = Result<Bytes, E>>, U>(
     child: Child,
     input: I,
     output_buffer_size: usize,
-) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>> {
+) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U> {
     new_process(child, input, output_buffer_size)
 }
 
 impl<
         E,
-        I: Stream<Item = Result<Bytes, E>>,
+        U: AsRef<[u8]>,
+        I: Stream<Item = Result<U, E>>,
         X: Future<Output = Result<ExitStatus, std::io::Error>>,
-    > ProcessStream<I, X>
+    > ProcessStream<I, X, U>
 {
     fn next_stdout(
         mut self: Pin<&mut Self>,
@@ -180,9 +181,9 @@ impl<
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Output, ProcessError>>> {
         //let status = self.as_mut().project().status;
-        if let Some(v) = self.as_mut().project().input_buffer.take() {
+        if let Some((v, offset)) = self.as_mut().project().input_buffer.take() {
             println!("--> Non empty buffer");
-            self.as_mut().push_to_stdin(v, cx);
+            self.as_mut().push_to_stdin(v, offset, cx);
         }
         let mut input_pending = false;
         while let (true, false, true, Some(input)) = (
@@ -194,7 +195,7 @@ impl<
             println!("--> polling input");
             match input.poll_next(cx) {
                 Poll::Ready(Some(Ok(v))) => {
-                    if let Some(err) = self.as_mut().push_to_stdin(v, cx) {
+                    if let Some(err) = self.as_mut().push_to_stdin(v, 0, cx) {
                         return Poll::Ready(Some(Err(err)));
                     }
                 }
@@ -221,9 +222,9 @@ impl<
             *self.as_mut().project().input_buffer = None;
         } else if self.as_mut().project().input.is_none() {
             println!("--> input is closed");
-            if let Some(v) = self.as_mut().project().input_buffer.take() {
+            if let Some((v, offset)) = self.as_mut().project().input_buffer.take() {
                 // il faut vider le buffer dans stdin
-                if let Some(err) = self.as_mut().push_to_stdin(v, cx) {
+                if let Some(err) = self.as_mut().push_to_stdin(v, offset, cx) {
                     return Poll::Ready(Some(Err(err)));
                 }
                 if self.as_mut().project().input_buffer.is_none() {
@@ -259,18 +260,23 @@ impl<
         }
     }
 
-    fn push_to_stdin(mut self: Pin<&mut Self>, v: Bytes, cx: &mut Context) -> Option<ProcessError> {
+    fn push_to_stdin(
+        mut self: Pin<&mut Self>,
+        v: U,
+        offset: usize,
+        cx: &mut Context,
+    ) -> Option<ProcessError> {
         let proj = self.as_mut().project();
         let stdin = proj.stdin.as_mut().unwrap();
-        match Pin::new(stdin).poll_write(cx, &v) {
+        match Pin::new(stdin).poll_write(cx, &v.as_ref()[offset..]) {
             Poll::Ready(Ok(size)) => {
                 if size == 0 {
                     println!("--> stdin ending");
                     *proj.stdin = None;
                 } else {
                     println!("--> stdin accepting");
-                    if size < v.len() {
-                        *proj.input_buffer = Some(v.slice(size..));
+                    if size + offset < v.as_ref().len() {
+                        *proj.input_buffer = Some((v, size + offset));
                     }
                     if let Some(err) = self.flush_stdin(cx) {
                         return Some(err);
@@ -283,7 +289,7 @@ impl<
             }
             Poll::Pending => {
                 println!("--> stdin pending");
-                *proj.input_buffer = Some(v);
+                *proj.input_buffer = Some((v, offset));
             }
         }
         None
@@ -308,9 +314,10 @@ impl<
     }
 }
 
-impl<I, X, E> Stream for ProcessStream<I, X>
+impl<I, X, E, U> Stream for ProcessStream<I, X, U>
 where
-    I: Stream<Item = Result<Bytes, E>>,
+    U: AsRef<[u8]>,
+    I: Stream<Item = Result<U, E>>,
     X: Future<Output = Result<ExitStatus, std::io::Error>>,
 {
     type Item = Result<Output, ProcessError>;
@@ -353,7 +360,7 @@ where
 #[cfg(test)]
 mod process_stream_test {
     use crate::process::new_process;
-    use std::{cell::Cell, process::Stdio, rc::Rc, time::Duration};
+    use std::{cell::Cell, iter, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
     use futures::{
@@ -379,7 +386,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -407,7 +414,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -442,7 +449,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -470,7 +477,7 @@ mod process_stream_test {
             let v = rc2.get() + 1;
             rc2.set(v);
             println!("INPUT: coucou {}", v);
-            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+            Ok::<Bytes, String>(Bytes::from("valuert".as_bytes()))
         });
         let process_stream = new_process(child, input, 1024);
         let s = process_stream
@@ -478,7 +485,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -488,7 +495,7 @@ mod process_stream_test {
             })
             .await;
         assert_eq!(s, "");
-        assert_eq!(rc.get(), 13105);
+        assert_eq!(rc.get(), 9361);
     }
 
     #[tokio::test]
@@ -514,7 +521,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -541,7 +548,7 @@ mod process_stream_test {
             let v = rc2.get() + 1;
             rc2.set(v);
             println!("INPUT: coucou {}", v);
-            Ok::<Bytes, String>(Bytes::from("value".as_bytes()))
+            Ok::<Bytes, String>(Bytes::from("valuert".as_bytes()))
         });
         let process_stream = new_process(child, input, 1024);
         let s = process_stream
@@ -549,7 +556,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
@@ -558,8 +565,14 @@ mod process_stream_test {
                 s + &String::from_utf8_lossy(&b)
             })
             .await;
-        assert_eq!(s, "");
-        assert_eq!(rc.get(), 27028);
+        assert_eq!(s.len(), 70000);
+        let expected: String = iter::repeat("valuert")
+            .map(|s| s.chars())
+            .flatten()
+            .take(70000)
+            .collect();
+        assert_eq!(s, expected);
+        assert_eq!(rc.get(), 19306);
     }
 
     #[tokio::test]
@@ -586,7 +599,7 @@ mod process_stream_test {
                 println!("RES: {:?}", r);
                 match r.unwrap() {
                     crate::process::Output::Stdout(s) => Some(s),
-                    crate::process::Output::Stderr(s) => panic!("error"),
+                    crate::process::Output::Stderr(_) => panic!("error"),
                     crate::process::Output::ExitCode(_) => None,
                 }
             })
