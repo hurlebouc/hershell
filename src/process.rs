@@ -29,9 +29,6 @@ pub struct ProcessStream<I, X, U> {
 }
 
 #[derive(Debug)]
-struct PSStatus {}
-
-#[derive(Debug)]
 pub enum Output {
     Stdout(Bytes),
     Stderr(Bytes),
