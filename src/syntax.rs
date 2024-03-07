@@ -27,7 +27,7 @@ impl Cmd {
         self
     }
 
-    pub async fn run(self) -> std::io::Result<ExitStatus> {
+    pub async fn run(self) -> Result<(), ProcessRunError> {
         run(self).await
     }
 }
@@ -83,20 +83,75 @@ where
     }
 }
 
-pub async fn run<C: Into<Cmd>>(cmd: C) -> std::io::Result<ExitStatus> {
+#[derive(Debug)]
+pub enum ProcessRunError {
+    IoError(std::io::Error),
+    BadExitStatus(ExitStatus),
+}
+
+impl From<std::io::Error> for ProcessRunError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+impl From<ProcessApplyError> for ProcessRunError {
+    fn from(value: ProcessApplyError) -> Self {
+        match value {
+            ProcessApplyError::IoError(io) => ProcessRunError::IoError(io),
+            ProcessApplyError::BadExitStatus(output) => {
+                ProcessRunError::BadExitStatus(output.status)
+            }
+        }
+    }
+}
+
+pub async fn run<C: Into<Cmd>>(cmd: C) -> Result<(), ProcessRunError> {
     let mut command: Command = cmd.into().0;
-    command
+    let exit_status = command
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
-        .await
+        .await?;
+    if !exit_status.success() {
+        return Err(ProcessRunError::BadExitStatus(exit_status));
+    }
+    return Ok(());
+}
+
+#[derive(Debug)]
+pub enum ProcessApplyError {
+    IoError(std::io::Error),
+    BadExitStatus(std::process::Output),
+}
+
+impl From<std::io::Error> for ProcessApplyError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+impl From<ProcessRunError> for ProcessApplyError {
+    fn from(value: ProcessRunError) -> Self {
+        match value {
+            ProcessRunError::IoError(io) => ProcessApplyError::IoError(io),
+            ProcessRunError::BadExitStatus(code) => {
+                let output = std::process::Output {
+                    status: code,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                };
+                ProcessApplyError::BadExitStatus(output)
+            }
+        }
+    }
 }
 
 pub async fn apply<C: Into<Cmd>, U: AsRef<[u8]> + std::marker::Send + 'static>(
     cmd: C,
     input: U,
-) -> std::io::Result<std::process::Output> {
+) -> Result<std::process::Output, ProcessApplyError> {
     let mut command: Command = cmd.into().0;
     let mut child = command
         .stdin(std::process::Stdio::piped())
@@ -110,7 +165,14 @@ pub async fn apply<C: Into<Cmd>, U: AsRef<[u8]> + std::marker::Send + 'static>(
             Err(_) => {} // cas où le process n'a pas lu toute son entrée
         }
     });
-    child.wait_with_output().await
+
+    let output = child.wait_with_output().await?;
+
+    if !output.status.success() {
+        return Err(ProcessApplyError::BadExitStatus(output));
+    }
+
+    return Ok(output);
 }
 
 pub fn stream<I, U, C: Into<Cmd>>(
