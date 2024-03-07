@@ -81,11 +81,14 @@ pub fn new_process<I, U>(
     }
 }
 
-pub fn new_process_typed<E, I: Stream<Item = Result<Bytes, E>>, U>(
+pub fn new_process_typed<E, I, U>(
     child: Child,
     input: I,
     output_buffer_size: usize,
-) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U> {
+) -> ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U>
+where
+    I: Stream<Item = Result<U, E>>,
+{
     new_process(child, input, output_buffer_size)
 }
 
