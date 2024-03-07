@@ -334,7 +334,7 @@ pub trait ProcStreamExt
 where
     Self: TryStream<Ok = Output>,
 {
-    fn stdout(self) -> impl TryStream<Ok = Bytes, Error = <Self as TryStream>::Error>
+    fn stdout(self) -> impl Stream<Item = Result<Bytes, <Self as TryStream>::Error>>
     where
         Self: Sized,
     {
@@ -345,7 +345,7 @@ where
         })
     }
 
-    fn stderr(self) -> impl TryStream<Ok = Bytes, Error = <Self as TryStream>::Error>
+    fn stderr(self) -> impl Stream<Item = Result<Bytes, <Self as TryStream>::Error>>
     where
         Self: Sized,
     {
