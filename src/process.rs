@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{Future, Stream, TryStream, TryStreamExt};
+use futures::{Future, FutureExt, Stream, TryStream, TryStreamExt};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -95,7 +95,9 @@ pub fn new_process<I, U>(
         input_buffer: None,
         output_buffer_size,
         //exit_code: Box::new(async move { child.wait().await }),
-        exit_code: Some(async move { child.wait().await }),
+        //exit_code: Some(async move { child.wait().await }),
+        exit_code: Some(Box::pin(async move { child.wait().await })),
+        //exit_code: Some(ExitCode(child)),
     }
 }
 
