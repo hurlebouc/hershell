@@ -129,10 +129,12 @@ impl<
             Some(stdout) => match Pin::new(stdout).poll_read(cx, &mut readbuf) {
                 Poll::Ready(Ok(())) => {
                     if readbuf.filled().len() != 0 {
-                        println!("--> stdout message");
-                        Poll::Ready(Some(Ok(Output::Stdout(Bytes::from(
-                            readbuf.filled().to_vec(),
-                        )))))
+                        let read_bytes = readbuf.filled().to_vec();
+                        println!(
+                            "--> stdout message: {}",
+                            String::from_utf8_lossy(&read_bytes)
+                        );
+                        Poll::Ready(Some(Ok(Output::Stdout(Bytes::from(read_bytes)))))
                     } else {
                         println!("--> stdout closing");
                         *self.as_mut().project().stdout = None;
