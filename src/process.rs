@@ -266,18 +266,25 @@ impl<
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Output, ProcessStreamError<E>>>> {
         if let Some(exit_code) = self.as_mut().project().exit_code.as_pin_mut().take() {
+            println!("--> start waiting for exit code");
             match exit_code.poll(cx) {
                 Poll::Ready(Ok(x)) => {
+                    println!("--> exit code is {}", x);
                     self.as_mut().project().exit_code.set(None);
                     Poll::Ready(Some(Ok(Output::ExitCode(x))))
                 }
                 Poll::Ready(Err(err)) => {
+                    println!("--> error waiting for exit code: {}", err);
                     self.as_mut().project().exit_code.set(None);
                     Poll::Ready(Some(Err(ProcessStreamError::Exit(err))))
                 }
-                Poll::Pending => Poll::Pending,
+                Poll::Pending => {
+                    println!("--> waiting for exit code");
+                    Poll::Pending
+                }
             }
         } else {
+            println!("--> exit code already given, close stream");
             Poll::Ready(None)
         }
     }
