@@ -430,9 +430,19 @@ where
     type Item = Result<Bytes, E>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        trace!(format!("ForEachErr --> poll_next"));
         match self.as_mut().project().stream.poll_next(cx) {
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Ok(Output::Stdout(b)))) => Poll::Ready(Some(Ok(b))),
+            Poll::Ready(None) => {
+                trace!(format!("ForEachErr --> Done"));
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Ok(Output::Stdout(b)))) => {
+                trace!(format!(
+                    "ForEachErr --> stdout : {}",
+                    String::from_utf8_lossy(&b)
+                ));
+                Poll::Ready(Some(Ok(b)))
+            }
             Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
                 if self.as_mut().project().fut.is_none() {
                     let fut = (self.as_mut().project().f)(b);
@@ -445,16 +455,37 @@ where
                     .fut
                     .as_pin_mut()
                     .expect("This future has just been provided");
-                let ready_fut = ready!(fut.poll(cx));
+                let ready_fut = match fut.poll(cx) {
+                    Poll::Ready(t) => t,
+                    Poll::Pending => {
+                        trace!(format!("ForEachErr --> future not ready"));
+                        return Poll::Pending;
+                    }
+                };
                 self.as_mut().project().fut.set(None);
                 match ready_fut {
-                    Ok(()) => Poll::Pending,
-                    Err(e) => Poll::Ready(Some(Err(e))),
+                    Ok(()) => {
+                        trace!(format!("ForEachErr --> future done"));
+                        Poll::Pending
+                    }
+                    Err(e) => {
+                        trace!(format!("ForEachErr --> future error"));
+                        Poll::Ready(Some(Err(e)))
+                    }
                 }
             }
-            Poll::Ready(Some(Ok(Output::ExitCode(_)))) => Poll::Ready(None),
-            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
-            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(Ok(Output::ExitCode(_)))) => {
+                trace!(format!("ForEachErr --> exit code"));
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(err))) => {
+                trace!(format!("ForEachErr --> error"));
+                Poll::Ready(Some(Err(err)))
+            }
+            Poll::Pending => {
+                trace!(format!("ForEachErr --> Pending"));
+                Poll::Pending
+            }
         }
     }
 }
@@ -462,11 +493,15 @@ where
 #[cfg(test)]
 mod process_stream_test {
     use crate::process::new_process;
+    use crate::process::ProcStreamExt;
+    use std::future::ready;
     use std::{cell::Cell, iter, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
+    use futures::FutureExt;
+    use futures::TryStreamExt;
     use futures::{
-        stream::{self},
+        stream::{self, repeat_with},
         StreamExt,
     };
     use tokio::{process::Command, time::sleep};
@@ -711,5 +746,35 @@ mod process_stream_test {
             })
             .await;
         assert_eq!(s, "valuevalue")
+    }
+
+    #[tokio::test]
+    async fn filter_stderr_out_test() {
+        let mut n = 0;
+        let stream = repeat_with(|| {
+            n = n + 1;
+            if n % 2 == 0 {
+                Ok::<crate::process::Output, String>(crate::process::Output::Stdout(
+                    Bytes::from_static("Ok".as_bytes()),
+                ))
+            } else {
+                Ok(crate::process::Output::Stderr(Bytes::from_static(
+                    "Err".as_bytes(),
+                )))
+            }
+        })
+        .take(10);
+        let out_stream = stream.foreach_err(|b| {
+            println!("enter foreach function");
+            sleep(Duration::from_millis(2000))
+                .then(move |()| ready(Ok(println!("STDERR : {}", String::from_utf8_lossy(&b)))))
+        });
+        let out = out_stream
+            .try_fold("".to_string(), |s, b| async move {
+                println!("STDOUT: {}", String::from_utf8_lossy(&b));
+                Ok(s + &String::from_utf8_lossy(&b))
+            })
+            .await;
+        assert_eq!(out, Ok("".to_string()));
     }
 }
