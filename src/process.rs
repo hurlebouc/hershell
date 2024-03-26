@@ -431,60 +431,62 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         trace!(format!("ForEachErr --> poll_next"));
-        match self.as_mut().project().stream.poll_next(cx) {
-            Poll::Ready(None) => {
-                trace!(format!("ForEachErr --> Done"));
-                Poll::Ready(None)
-            }
-            Poll::Ready(Some(Ok(Output::Stdout(b)))) => {
-                trace!(format!(
-                    "ForEachErr --> stdout : {}",
-                    String::from_utf8_lossy(&b)
-                ));
-                Poll::Ready(Some(Ok(b)))
-            }
-            Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
-                if self.as_mut().project().fut.is_none() {
-                    let fut = (self.as_mut().project().f)(b);
-                    self.as_mut().project().fut.set(Some(fut));
+        loop {
+            match self.as_mut().project().stream.poll_next(cx) {
+                Poll::Ready(None) => {
+                    trace!(format!("ForEachErr --> Done"));
+                    return Poll::Ready(None);
                 }
+                Poll::Ready(Some(Ok(Output::Stdout(b)))) => {
+                    trace!(format!(
+                        "ForEachErr --> stdout : {}",
+                        String::from_utf8_lossy(&b)
+                    ));
+                    return Poll::Ready(Some(Ok(b)));
+                }
+                Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
+                    if self.as_mut().project().fut.is_none() {
+                        let fut = (self.as_mut().project().f)(b);
+                        self.as_mut().project().fut.set(Some(fut));
+                    }
 
-                let fut = self
-                    .as_mut()
-                    .project()
-                    .fut
-                    .as_pin_mut()
-                    .expect("This future has just been provided");
-                let ready_fut = match fut.poll(cx) {
-                    Poll::Ready(t) => t,
-                    Poll::Pending => {
-                        trace!(format!("ForEachErr --> future not ready"));
-                        return Poll::Pending;
-                    }
-                };
-                self.as_mut().project().fut.set(None);
-                match ready_fut {
-                    Ok(()) => {
-                        trace!(format!("ForEachErr --> future done"));
-                        Poll::Pending
-                    }
-                    Err(e) => {
-                        trace!(format!("ForEachErr --> future error"));
-                        Poll::Ready(Some(Err(e)))
+                    let fut = self
+                        .as_mut()
+                        .project()
+                        .fut
+                        .as_pin_mut()
+                        .expect("This future has just been provided");
+                    let ready_fut = match fut.poll(cx) {
+                        Poll::Ready(t) => t,
+                        Poll::Pending => {
+                            trace!(format!("ForEachErr --> future not ready"));
+                            return Poll::Pending;
+                        }
+                    };
+                    self.as_mut().project().fut.set(None);
+                    match ready_fut {
+                        Ok(()) => {
+                            trace!(format!("ForEachErr --> future done"));
+                            //return Poll::Pending;
+                        }
+                        Err(e) => {
+                            trace!(format!("ForEachErr --> future error"));
+                            return Poll::Ready(Some(Err(e)));
+                        }
                     }
                 }
-            }
-            Poll::Ready(Some(Ok(Output::ExitCode(_)))) => {
-                trace!(format!("ForEachErr --> exit code"));
-                Poll::Ready(None)
-            }
-            Poll::Ready(Some(Err(err))) => {
-                trace!(format!("ForEachErr --> error"));
-                Poll::Ready(Some(Err(err)))
-            }
-            Poll::Pending => {
-                trace!(format!("ForEachErr --> Pending"));
-                Poll::Pending
+                Poll::Ready(Some(Ok(Output::ExitCode(_)))) => {
+                    trace!(format!("ForEachErr --> exit code"));
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(Err(err))) => {
+                    trace!(format!("ForEachErr --> error"));
+                    return Poll::Ready(Some(Err(err)));
+                }
+                Poll::Pending => {
+                    trace!(format!("ForEachErr --> Pending"));
+                    return Poll::Pending;
+                }
             }
         }
     }
@@ -495,6 +497,8 @@ mod process_stream_test {
     use crate::process::new_process;
     use crate::process::ProcStreamExt;
     use std::future::ready;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::{cell::Cell, iter, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
@@ -764,9 +768,11 @@ mod process_stream_test {
             }
         })
         .take(10);
+        let str_builder = Arc::new(Mutex::new(String::new()));
         let out_stream = stream.foreach_err(|b| {
+            let str_builder = str_builder.clone();
             println!("enter foreach function");
-            sleep(Duration::from_millis(2000))
+            sleep(Duration::from_millis(100))
                 .then(move |()| ready(Ok(println!("STDERR : {}", String::from_utf8_lossy(&b)))))
         });
         let out = out_stream
@@ -775,6 +781,6 @@ mod process_stream_test {
                 Ok(s + &String::from_utf8_lossy(&b))
             })
             .await;
-        assert_eq!(out, Ok("".to_string()));
+        assert_eq!(out, Ok("OkOkOkOkOk".to_string()));
     }
 }
