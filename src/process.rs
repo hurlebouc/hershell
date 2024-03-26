@@ -1,12 +1,13 @@
 use std::{
     future::ready,
+    ops::Deref,
     pin::Pin,
     process::ExitStatus,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::{Future, Stream, TryStream, TryStreamExt};
+use futures::{Future, FutureExt, Stream, TryFutureExt, TryStream, TryStreamExt};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -395,6 +396,66 @@ where
             Output::Stderr(b) => ready(Ok(Some(b))),
             Output::ExitCode(_) => ready(Ok(None)),
         })
+    }
+
+    fn foreach_err<FN, FUT, E>(self, f: FN) -> ForEachErr<Self, FN, FUT>
+    where
+        Self: Sized,
+        FN: FnMut(Bytes) -> FUT,
+        FUT: Future<Output = Result<(), E>>,
+    {
+        ForEachErr {
+            stream: self,
+            f,
+            fut: None,
+        }
+    }
+}
+
+#[pin_project]
+pub struct ForEachErr<S, FN, FUT> {
+    #[pin]
+    stream: S,
+    #[pin]
+    fut: Option<FUT>,
+    f: FN,
+}
+
+impl<S, FN, FUT, E> Stream for ForEachErr<S, FN, FUT>
+where
+    S: Stream<Item = Result<Output, E>>,
+    FN: FnMut(Bytes) -> FUT,
+    FUT: Future<Output = Result<(), E>>,
+{
+    type Item = Result<Bytes, E>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.as_mut().project().stream.poll_next(cx) {
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Ok(Output::Stdout(b)))) => Poll::Ready(Some(Ok(b))),
+            Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
+                if self.as_mut().project().fut.is_none() {
+                    let fut = (self.as_mut().project().f)(b);
+                    self.as_mut().project().fut.set(Some(fut));
+                }
+
+                let fut = self
+                    .as_mut()
+                    .project()
+                    .fut
+                    .as_pin_mut()
+                    .expect("This future has just been provided");
+                let ready_fut = ready!(fut.poll(cx));
+                self.as_mut().project().fut.set(None);
+                match ready_fut {
+                    Ok(()) => Poll::Pending,
+                    Err(e) => Poll::Ready(Some(Err(e))),
+                }
+            }
+            Poll::Ready(Some(Ok(Output::ExitCode(_)))) => Poll::Ready(None),
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
