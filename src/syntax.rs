@@ -30,6 +30,27 @@ impl Cmd {
     pub async fn run(self) -> Result<(), ProcessRunError> {
         run(self).await
     }
+
+    pub async fn apply<U: AsRef<[u8]> + std::marker::Send + 'static>(
+        self,
+        input: U,
+    ) -> Result<std::process::Output, ProcessApplyError> {
+        apply(self, input).await
+    }
+
+    pub fn stream<I, U, C>(
+        self,
+        stdin: I,
+    ) -> std::io::Result<
+        ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U>,
+    >
+    where
+        U: AsRef<[u8]>,
+        I: TryStream<Ok = Bytes>,
+        C: Into<Cmd>,
+    {
+        stream(self, stdin)
+    }
 }
 
 /// Ce trait est utilisé pour ne pas dupliquer l'implémentation `impl<T: AsRef<OsStr>> From<T> for Cmd`, tout en limitant
@@ -175,13 +196,14 @@ pub async fn apply<C: Into<Cmd>, U: AsRef<[u8]> + std::marker::Send + 'static>(
     return Ok(output);
 }
 
-pub fn stream<I, U, C: Into<Cmd>>(
+pub fn stream<I, U, C>(
     cmd: C,
     stdin: I,
 ) -> std::io::Result<ProcessStream<I, impl Future<Output = Result<ExitStatus, std::io::Error>>, U>>
 where
     U: AsRef<[u8]>,
     I: TryStream<Ok = Bytes>,
+    C: Into<Cmd>,
 {
     let mut command = cmd.into().0;
     let child = command
