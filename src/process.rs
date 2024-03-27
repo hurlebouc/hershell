@@ -1,13 +1,12 @@
 use std::{
     future::ready,
-    ops::Deref,
     pin::Pin,
     process::ExitStatus,
-    task::{ready, Context, Poll},
+    task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::{Future, FutureExt, Stream, TryFutureExt, TryStream, TryStreamExt};
+use futures::{Future, Stream, TryStream, TryStreamExt};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -491,9 +490,6 @@ mod process_stream_test {
     use crate::process::new_process;
     use crate::process::ProcStreamExt;
     use std::future::ready;
-    use std::ops::Deref;
-    use std::sync::Arc;
-    use std::sync::Mutex;
     use std::{cell::Cell, iter, process::Stdio, rc::Rc, time::Duration};
 
     use bytes::Bytes;
