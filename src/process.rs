@@ -432,60 +432,54 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         trace!(format!("ForEachErr --> poll_next"));
         loop {
-            match self.as_mut().project().stream.poll_next(cx) {
-                Poll::Ready(None) => {
-                    trace!(format!("ForEachErr --> Done"));
-                    return Poll::Ready(None);
+            if let Some(fut) = self.as_mut().project().fut.as_pin_mut() {
+                let ready_fut = match fut.poll(cx) {
+                    Poll::Ready(t) => t,
+                    Poll::Pending => {
+                        trace!(format!("ForEachErr --> future not ready"));
+                        return Poll::Pending;
+                    }
+                };
+                self.as_mut().project().fut.set(None);
+                match ready_fut {
+                    Ok(()) => {
+                        trace!(format!("ForEachErr --> future done"));
+                        //return Poll::Pending;
+                    }
+                    Err(e) => {
+                        trace!(format!("ForEachErr --> future error"));
+                        return Poll::Ready(Some(Err(e)));
+                    }
                 }
-                Poll::Ready(Some(Ok(Output::Stdout(b)))) => {
-                    trace!(format!(
-                        "ForEachErr --> stdout : {}",
-                        String::from_utf8_lossy(&b)
-                    ));
-                    return Poll::Ready(Some(Ok(b)));
-                }
-                Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
-                    if self.as_mut().project().fut.is_none() {
+            } else {
+                match self.as_mut().project().stream.poll_next(cx) {
+                    Poll::Ready(None) => {
+                        trace!(format!("ForEachErr --> Done"));
+                        return Poll::Ready(None);
+                    }
+                    Poll::Ready(Some(Ok(Output::Stdout(b)))) => {
+                        trace!(format!(
+                            "ForEachErr --> stdout : {}",
+                            String::from_utf8_lossy(&b)
+                        ));
+                        return Poll::Ready(Some(Ok(b)));
+                    }
+                    Poll::Ready(Some(Ok(Output::Stderr(b)))) => {
                         let fut = (self.as_mut().project().f)(b);
                         self.as_mut().project().fut.set(Some(fut));
                     }
-
-                    let fut = self
-                        .as_mut()
-                        .project()
-                        .fut
-                        .as_pin_mut()
-                        .expect("This future has just been provided");
-                    let ready_fut = match fut.poll(cx) {
-                        Poll::Ready(t) => t,
-                        Poll::Pending => {
-                            trace!(format!("ForEachErr --> future not ready"));
-                            return Poll::Pending;
-                        }
-                    };
-                    self.as_mut().project().fut.set(None);
-                    match ready_fut {
-                        Ok(()) => {
-                            trace!(format!("ForEachErr --> future done"));
-                            //return Poll::Pending;
-                        }
-                        Err(e) => {
-                            trace!(format!("ForEachErr --> future error"));
-                            return Poll::Ready(Some(Err(e)));
-                        }
+                    Poll::Ready(Some(Ok(Output::ExitCode(_)))) => {
+                        trace!(format!("ForEachErr --> exit code"));
+                        return Poll::Ready(None);
                     }
-                }
-                Poll::Ready(Some(Ok(Output::ExitCode(_)))) => {
-                    trace!(format!("ForEachErr --> exit code"));
-                    return Poll::Ready(None);
-                }
-                Poll::Ready(Some(Err(err))) => {
-                    trace!(format!("ForEachErr --> error"));
-                    return Poll::Ready(Some(Err(err)));
-                }
-                Poll::Pending => {
-                    trace!(format!("ForEachErr --> Pending"));
-                    return Poll::Pending;
+                    Poll::Ready(Some(Err(err))) => {
+                        trace!(format!("ForEachErr --> error"));
+                        return Poll::Ready(Some(Err(err)));
+                    }
+                    Poll::Pending => {
+                        trace!(format!("ForEachErr --> Pending"));
+                        return Poll::Pending;
+                    }
                 }
             }
         }
@@ -497,6 +491,7 @@ mod process_stream_test {
     use crate::process::new_process;
     use crate::process::ProcStreamExt;
     use std::future::ready;
+    use std::ops::Deref;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::{cell::Cell, iter, process::Stdio, rc::Rc, time::Duration};
@@ -757,6 +752,7 @@ mod process_stream_test {
         let mut n = 0;
         let stream = repeat_with(|| {
             n = n + 1;
+            println!("n = {}", n);
             if n % 2 == 0 {
                 Ok::<crate::process::Output, String>(crate::process::Output::Stdout(
                     Bytes::from_static("Ok".as_bytes()),
@@ -768,9 +764,11 @@ mod process_stream_test {
             }
         })
         .take(10);
-        let str_builder = Arc::new(Mutex::new(String::new()));
+        let str_builder = Cell::new(String::new());
         let out_stream = stream.foreach_err(|b| {
-            let str_builder = str_builder.clone();
+            let mut s = str_builder.take();
+            s.push_str(&String::from_utf8_lossy(&b));
+            str_builder.set(s);
             println!("enter foreach function");
             sleep(Duration::from_millis(100))
                 .then(move |()| ready(Ok(println!("STDERR : {}", String::from_utf8_lossy(&b)))))
@@ -782,5 +780,6 @@ mod process_stream_test {
             })
             .await;
         assert_eq!(out, Ok("OkOkOkOkOk".to_string()));
+        assert_eq!(str_builder.take(), "ErrErrErrErrErr");
     }
 }
