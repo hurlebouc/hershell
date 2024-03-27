@@ -426,6 +426,17 @@ pub enum ForEachErrError<ES, EF> {
     FilterError(EF),
 }
 
+impl<ES: Into<std::io::Error>, EF: Into<std::io::Error>> From<ForEachErrError<ES, EF>>
+    for std::io::Error
+{
+    fn from(value: ForEachErrError<ES, EF>) -> Self {
+        match value {
+            ForEachErrError::StreamError(e) => e.into(),
+            ForEachErrError::FilterError(e) => e.into(),
+        }
+    }
+}
+
 impl<S, FN, FUT, ES, EF> Stream for ForEachErr<S, FN, FUT>
 where
     S: Stream<Item = Result<Output, ES>>,
