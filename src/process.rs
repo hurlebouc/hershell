@@ -420,13 +420,19 @@ pub struct ForEachErr<S, FN, FUT> {
     f: FN,
 }
 
-impl<S, FN, FUT, E> Stream for ForEachErr<S, FN, FUT>
+#[derive(Debug, PartialEq)]
+pub enum ForEachErrError<ES, EF> {
+    StreamError(ES),
+    FilterError(EF),
+}
+
+impl<S, FN, FUT, ES, EF> Stream for ForEachErr<S, FN, FUT>
 where
-    S: Stream<Item = Result<Output, E>>,
+    S: Stream<Item = Result<Output, ES>>,
     FN: FnMut(Bytes) -> FUT,
-    FUT: Future<Output = Result<(), E>>,
+    FUT: Future<Output = Result<(), EF>>,
 {
-    type Item = Result<Bytes, E>;
+    type Item = Result<Bytes, ForEachErrError<ES, EF>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         trace!(format!("ForEachErr --> poll_next"));
@@ -447,7 +453,7 @@ where
                     }
                     Err(e) => {
                         trace!(format!("ForEachErr --> future error"));
-                        return Poll::Ready(Some(Err(e)));
+                        return Poll::Ready(Some(Err(ForEachErrError::FilterError(e))));
                     }
                 }
             } else {
@@ -473,7 +479,7 @@ where
                     }
                     Poll::Ready(Some(Err(err))) => {
                         trace!(format!("ForEachErr --> error"));
-                        return Poll::Ready(Some(Err(err)));
+                        return Poll::Ready(Some(Err(ForEachErrError::StreamError(err))));
                     }
                     Poll::Pending => {
                         trace!(format!("ForEachErr --> Pending"));
@@ -766,8 +772,12 @@ mod process_stream_test {
             s.push_str(&String::from_utf8_lossy(&b));
             str_builder.set(s);
             println!("enter foreach function");
-            sleep(Duration::from_millis(100))
-                .then(move |()| ready(Ok(println!("STDERR : {}", String::from_utf8_lossy(&b)))))
+            sleep(Duration::from_millis(100)).then(move |()| {
+                ready(Ok::<(), ()>(println!(
+                    "STDERR : {}",
+                    String::from_utf8_lossy(&b)
+                )))
+            })
         });
         let out = out_stream
             .try_fold("".to_string(), |s, b| async move {
